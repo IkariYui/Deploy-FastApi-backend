@@ -3,12 +3,15 @@ from fastapi.responses import StreamingResponse, JSONResponse
 import pandas as pd
 import io
 from fastapi.middleware.cors import CORSMiddleware
-
+    
 
 app = FastAPI(title="Procesador de Excel - Envios")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # o ["http://localhost:5173"]
+    allow_origins=[
+        "https://excel-frontend.web.app ",   # dominio del frontend
+        "https://console.firebase.google.com/project/excel-fl-frontend/overview"  # alternativo de Firebase
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
