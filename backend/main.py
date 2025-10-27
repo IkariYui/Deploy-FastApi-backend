@@ -6,15 +6,18 @@ from fastapi.middleware.cors import CORSMiddleware
     
 
 app = FastAPI(title="Procesador de Excel - Envios")
+origins = [
+    "https://excel-frontend.web.app",  # dominio de tu frontend en Firebase
+    "https://deploy-fastapi-backend.onrender.com",  # dominio del backend (por seguridad)
+    "http://localhost:5173",  # opcional: útil si pruebas localmente
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://excel-frontend.web.app ",   # dominio del frontend
-        "https://console.firebase.google.com/project/excel-fl-frontend/overview"  # alternativo de Firebase
-    ],
+    allow_origins=origins,  # dominios permitidos
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # permite todos los métodos (GET, POST, etc.)
+    allow_headers=["*"],  # permite todos los encabezados
 )
 
 @app.post('/procesar')
