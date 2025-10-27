@@ -6,91 +6,105 @@ from fastapi.middleware.cors import CORSMiddleware
     
 
 app = FastAPI(title="Procesador de Excel - Envios")
+
 origins = [
-    "https://excel-frontend.web.app",  # dominio de tu frontend en Firebase
+    "https://excel-frontend.web.app",  # dominio del frontend en Firebase
     "https://deploy-fastapi-backend.onrender.com",  # dominio del backend (por seguridad)
     "http://localhost:5173",  # opcional: útil si pruebas localmente
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,  # dominios permitidos
+    allow_origins=origins,  
     allow_credentials=True,
-    allow_methods=["*"],  # permite todos los métodos (GET, POST, etc.)
-    allow_headers=["*"],  # permite todos los encabezados
+    allow_methods=["*"],  
+    allow_headers=["*"],  
 )
+
 
 @app.post('/procesar')
 async def procesar_excel(file: UploadFile = File(...)):
-# Validación básica
+    # Validar tipo de archivo
     if not file.filename.lower().endswith(('.xls', '.xlsx')):
         raise HTTPException(status_code=400, detail='El archivo debe ser Excel (.xls/.xlsx)')
     
-    # Leer el contenido en memoria
+    # Leer el contenido del archivo
     contents = await file.read()
     try:
         df = pd.read_excel(io.BytesIO(contents), sheet_name='result')
     except Exception:
-    # Intentar leer la primera hoja si no existe "result"
         df = pd.read_excel(io.BytesIO(contents))
 
-    # Normalizar nombres de columnas (por si vienen con espacios o case distintos)
+    # Normalizar nombres de columnas
     df.columns = [c.strip() for c in df.columns]
 
-    # Asegurarse que las columnas existan
-    for col in ['DriverName', 'Route', 'RecipientName', 'customerAccountCode', 'TrackingNo']:
+    # Asegurar columnas necesarias
+    for col in ['DriverName', 'Route', 'RecipientName', 'customerAccountCode', 'TrackingNo', 'FinalStatus']:
         if col not in df.columns:
-        # No abortamos; solo ponemos NaN si falta
             df[col] = pd.NA
 
-    # Filtrar solo entregas completadas
-    df_entregados = df[df['FinalStatus'].astype(str).str.lower() == 'delivered']
+    # Normalizar FinalStatus (sin espacios, en minúsculas)
+    df['FinalStatus'] = df['FinalStatus'].astype(str).str.strip().str.lower()
 
-    # 1) PQ totales: rutas únicas por driver (solo entregas entregadas)
+    # Filtrar solo entregas con FinalStatus = delivered
+    df_entregados = df[df['FinalStatus'] == 'delivered']
+
+    # 1️⃣ PQ_Totales = número de rutas únicas (Route) donde hubo entregas delivered
     pq_totales = (
         df_entregados.groupby('DriverName')['Route']
         .nunique()
         .rename('PQ_Totales')
     )
 
-    # 2) Paradas: RecipientName únicos por driver
-    paradas = df.groupby('DriverName')['RecipientName'].nunique().rename('Paradas')
-
-    # 3) Entregas TEMU
-    entregas_temu = (
-    df[df['customerAccountCode'].astype(str).str.upper() == 'TEMU']
-    .groupby('DriverName')['TrackingNo']
-    .count()
-    .rename('Entregas_TEMU')
+    # 2️⃣ Paradas = cantidad de RecipientName únicos por Driver (de todo el archivo)
+    paradas = (
+        df.groupby('DriverName')['RecipientName']
+        .nunique()
+        .rename('Paradas')
     )
 
-    # 4) Concatenar
-    resumen = pd.concat([pq_totales, paradas, entregas_temu], axis=1).fillna(0).reset_index()
-    resumen['Entregas_TEMU'] = resumen['Entregas_TEMU'].astype(int) 
+    # 3️⃣ Entregas TEMU = cantidad de TrackingNo donde el cliente es TEMU (sin importar status)
+    entregas_temu = (
+        df[df['customerAccountCode'].astype(str).str.upper().str.strip() == 'TEMU']
+        .groupby('DriverName')['TrackingNo']
+        .count()
+        .rename('Entregas_TEMU')
+    )
 
-    # 5) Fila total
+    # 4️⃣ Combinar resultados
+    resumen = pd.concat([pq_totales, paradas, entregas_temu], axis=1).fillna(0).reset_index()
+
+    # Asegurar que Entregas_TEMU sea int
+    resumen['Entregas_TEMU'] = resumen['Entregas_TEMU'].astype(int)
+    resumen['PQ_Totales'] = resumen['PQ_Totales'].astype(int)
+    resumen['Paradas'] = resumen['Paradas'].astype(int)
+
+    # 5️⃣ Fila TOTAL GENERAL
     totales = pd.DataFrame({
-    'DriverName': ['TOTAL GENERAL'],
-    'PQ_Totales': [resumen['PQ_Totales'].sum()],
-    'Paradas': [resumen['Paradas'].sum()],
-    'Entregas_TEMU': [resumen['Entregas_TEMU'].sum()]
+        'DriverName': ['TOTAL GENERAL'],
+        'PQ_Totales': [resumen['PQ_Totales'].sum()],
+        'Paradas': [resumen['Paradas'].sum()],
+        'Entregas_TEMU': [resumen['Entregas_TEMU'].sum()]
     })
 
     resumen_final = pd.concat([resumen, totales], ignore_index=True)
 
-    # 6) Generar Excel en memoria
+    # 6️⃣ Generar Excel en memoria
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.to_excel(writer, sheet_name='Original', index=False)
         resumen_final.to_excel(writer, sheet_name='Resumen_por_Driver', index=False)
     output.seek(0)
 
-    # 7) Devolver el archivo como descarga
+    # 7️⃣ Retornar archivo como descarga
     filename = f"resumen_{file.filename.split('.')[0]}.xlsx"
-    headers = {
-    'Content-Disposition': f'attachment; filename="{filename}"'
-    }
-    return StreamingResponse(output, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers=headers)
+    headers = {'Content-Disposition': f'attachment; filename="{filename}"'}
+    return StreamingResponse(
+        output,
+        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers=headers
+    )
+
 
 @app.get('/ping')
 async def ping():
