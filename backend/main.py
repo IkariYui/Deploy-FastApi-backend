@@ -20,7 +20,6 @@ app.add_middleware(
 )
 
 
-
 @app.post('/procesar')
 async def procesar_excel(file: UploadFile = File(...)):
     # Validar tipo de archivo
@@ -42,46 +41,45 @@ async def procesar_excel(file: UploadFile = File(...)):
         if col not in df.columns:
             df[col] = pd.NA
 
-    # Normalizar FinalStatus (sin espacios, en minúsculas)
+    # 🔹 Normalizar FinalStatus
     df['FinalStatus'] = df['FinalStatus'].astype(str).str.strip().str.lower()
 
-    # Filtrar solo entregas con FinalStatus = delivered
+    # 1️⃣ Filtrar entregas completadas
     df_entregados = df[df['FinalStatus'] == 'delivered']
 
-    # 1️⃣ PQ_Totales = número de rutas únicas (Route) donde hubo entregas delivered
+    # 2️⃣ PQ_Totales = total de paquetes entregados (no rutas únicas)
     pq_totales = (
-        df_entregados.groupby('DriverName')['Route']
-        .nunique()
+        df_entregados.groupby('DriverName')['TrackingNo']
+        .count()
         .rename('PQ_Totales')
     )
 
-    # 2️⃣ Paradas = cantidad de RecipientName únicos por Driver (de todo el archivo)
+    # 3️⃣ Paradas = destinatarios únicos (RecipientName) entregados
     paradas = (
-        df.groupby('DriverName')['RecipientName']
+        df_entregados.groupby('DriverName')['RecipientName']
         .nunique()
         .rename('Paradas')
     )
 
-    # 3️⃣ Entregas TEMU = cantidad de TrackingNo entregados (FinalStatus=delivered) donde el cliente es TEMU
+    # 4️⃣ Entregas TEMU = solo los entregados donde el cliente es TEMU
     entregas_temu = (
-        df[
-            (df['customerAccountCode'].astype(str).str.upper().str.strip() == 'TEMU') &
-            (df['FinalStatus'] == 'delivered')
+        df_entregados[
+            df_entregados['customerAccountCode'].astype(str).str.upper().str.strip() == 'TEMU'
         ]
         .groupby('DriverName')['TrackingNo']
         .count()
         .rename('Entregas_TEMU')
     )
 
-    # 4️⃣ Combinar resultados
+    # 5️⃣ Combinar resultados
     resumen = pd.concat([pq_totales, paradas, entregas_temu], axis=1).fillna(0).reset_index()
 
-    # Asegurar que Entregas_TEMU sea int
-    resumen['Entregas_TEMU'] = resumen['Entregas_TEMU'].astype(int)
+    # Asegurar tipos
     resumen['PQ_Totales'] = resumen['PQ_Totales'].astype(int)
     resumen['Paradas'] = resumen['Paradas'].astype(int)
+    resumen['Entregas_TEMU'] = resumen['Entregas_TEMU'].astype(int)
 
-    # 5️⃣ Fila TOTAL GENERAL
+    # 6️⃣ Fila TOTAL GENERAL
     totales = pd.DataFrame({
         'DriverName': ['TOTAL GENERAL'],
         'PQ_Totales': [resumen['PQ_Totales'].sum()],
@@ -91,14 +89,14 @@ async def procesar_excel(file: UploadFile = File(...)):
 
     resumen_final = pd.concat([resumen, totales], ignore_index=True)
 
-    # 6️⃣ Generar Excel en memoria
+    # 7️⃣ Generar Excel en memoria
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.to_excel(writer, sheet_name='Original', index=False)
         resumen_final.to_excel(writer, sheet_name='Resumen_por_Driver', index=False)
     output.seek(0)
 
-    # 7️⃣ Retornar archivo como descarga
+    # 8️⃣ Retornar archivo como descarga
     filename = f"resumen_{file.filename.split('.')[0]}.xlsx"
     headers = {'Content-Disposition': f'attachment; filename="{filename}"'}
     return StreamingResponse(
