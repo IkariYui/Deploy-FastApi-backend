@@ -62,9 +62,12 @@ async def procesar_excel(file: UploadFile = File(...)):
         .rename('Paradas')
     )
 
-    # 3️⃣ Entregas TEMU = cantidad de TrackingNo donde el cliente es TEMU (sin importar status)
+    # 3️⃣ Entregas TEMU = cantidad de TrackingNo entregados (FinalStatus=delivered) donde el cliente es TEMU
     entregas_temu = (
-        df[df['customerAccountCode'].astype(str).str.upper().str.strip() == 'TEMU']
+        df[
+            (df['customerAccountCode'].astype(str).str.upper().str.strip() == 'TEMU') &
+            (df['FinalStatus'] == 'delivered')
+        ]
         .groupby('DriverName')['TrackingNo']
         .count()
         .rename('Entregas_TEMU')
