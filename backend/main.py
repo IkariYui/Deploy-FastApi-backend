@@ -43,8 +43,15 @@ async def procesar_excel(file: UploadFile = File(...)):
         # No abortamos; solo ponemos NaN si falta
             df[col] = pd.NA
 
-    # 1) PQ totales: rutas únicas por driver
-    pq_totales = df.groupby('DriverName')['Route'].nunique().rename('PQ_Totales')        
+    # Filtrar solo entregas completadas
+    df_entregados = df[df['FinalStatus'].astype(str).str.lower() == 'delivered']
+
+    # 1) PQ totales: rutas únicas por driver (solo entregas entregadas)
+    pq_totales = (
+        df_entregados.groupby('DriverName')['Route']
+        .nunique()
+        .rename('PQ_Totales')
+    )
 
     # 2) Paradas: RecipientName únicos por driver
     paradas = df.groupby('DriverName')['RecipientName'].nunique().rename('Paradas')
