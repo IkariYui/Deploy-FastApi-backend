@@ -47,26 +47,26 @@ async def procesar_excel(file: UploadFile = File(...)):
     # 1️⃣ Filtrar entregas completadas
     df_entregados = df[df['FinalStatus'] == 'delivered']
 
-    # 2️⃣ PQ_Totales = total de paquetes entregados (no rutas únicas)
+    # 2️⃣ PQ_Totales = total de paquetes entregados por Driver + Route
     pq_totales = (
-        df_entregados.groupby('DriverName')['TrackingNo']
+        df_entregados.groupby(['DriverName', 'Route'])['TrackingNo']
         .count()
         .rename('PQ_Totales')
     )
 
-    # 3️⃣ Paradas = destinatarios únicos (RecipientName) entregados
+    # 3️⃣ Paradas = destinatarios únicos por Driver + Route
     paradas = (
-        df_entregados.groupby('DriverName')['RecipientName']
+        df_entregados.groupby(['DriverName', 'Route'])['RecipientName']
         .nunique()
         .rename('Paradas')
     )
 
-    # 4️⃣ Entregas TEMU = solo los entregados donde el cliente es TEMU
+    # 4️⃣ Entregas TEMU = solo los entregados donde el cliente es TEMU, agrupados por Driver + Route
     entregas_temu = (
         df_entregados[
             df_entregados['customerAccountCode'].astype(str).str.upper().str.strip() == 'TEMU'
         ]
-        .groupby('DriverName')['TrackingNo']
+        .groupby(['DriverName', 'Route'])['TrackingNo']
         .count()
         .rename('Entregas_TEMU')
     )
@@ -79,9 +79,10 @@ async def procesar_excel(file: UploadFile = File(...)):
     resumen['Paradas'] = resumen['Paradas'].astype(int)
     resumen['Entregas_TEMU'] = resumen['Entregas_TEMU'].astype(int)
 
-    # 6️⃣ Fila TOTAL GENERAL
+    # 6️⃣ Fila TOTAL GENERAL (sumando todos los valores)
     totales = pd.DataFrame({
         'DriverName': ['TOTAL GENERAL'],
+        'Route': ['—'],
         'PQ_Totales': [resumen['PQ_Totales'].sum()],
         'Paradas': [resumen['Paradas'].sum()],
         'Entregas_TEMU': [resumen['Entregas_TEMU'].sum()]
@@ -93,7 +94,7 @@ async def procesar_excel(file: UploadFile = File(...)):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.to_excel(writer, sheet_name='Original', index=False)
-        resumen_final.to_excel(writer, sheet_name='Resumen_por_Driver', index=False)
+        resumen_final.to_excel(writer, sheet_name='Resumen_por_Driver_y_Ruta', index=False)
     output.seek(0)
 
     # 8️⃣ Retornar archivo como descarga
