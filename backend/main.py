@@ -64,7 +64,13 @@ async def procesar_excel(file: UploadFile = File(...)):
     # 4️⃣ Entregas TEMU = solo los entregados donde el cliente es TEMU, agrupados por Driver + Route
     entregas_temu = (
         df_entregados[
-            df_entregados['customerAccountCode'].astype(str).str.upper().str.strip() == 'TEMU'
+            df_entregados[
+            df_entregados['customerAccountCode']
+            .astype(str)
+            .str.upper()
+            .str.strip()
+            .str.startswith('TEMU')
+]
         ]
         .groupby(['DriverName', 'Route'])['TrackingNo']
         .count()
