@@ -22,42 +22,40 @@ app.add_middleware(
 @app.post("/procesar")
 async def procesar_excel(file: UploadFile = File(...)):
 
-    # 🔒 Validar archivo
     if not file.filename.lower().endswith((".xls", ".xlsx")):
         raise HTTPException(status_code=400, detail="El archivo debe ser Excel")
 
     contents = await file.read()
 
-    # 📥 Leer Excel
     try:
         df = pd.read_excel(io.BytesIO(contents), sheet_name="result")
     except Exception:
         df = pd.read_excel(io.BytesIO(contents))
 
-    # 🧹 Normalizar columnas
+    # Normalizar columnas
     df.columns = [c.strip() for c in df.columns]
 
-    columnas_necesarias = [
+    columnas = [
         "DriverName",
         "Route",
-        "RecipientName",
+        "RecipientName",   # Dirección
         "customerAccountCode",
         "TrackingNo",
         "FinalStatus",
-        "Weight",  # 👈 peso del paquete
+        "Weight",
     ]
 
-    for col in columnas_necesarias:
+    for col in columnas:
         if col not in df.columns:
             df[col] = pd.NA
 
-    # 🧼 Normalizaciones
+    # Normalizaciones
     df["FinalStatus"] = (
         df["FinalStatus"]
         .fillna("")
         .astype(str)
-        .str.strip()
         .str.lower()
+        .str.strip()
     )
 
     df["customerAccountCode"] = (
@@ -70,10 +68,36 @@ async def procesar_excel(file: UploadFile = File(...)):
 
     df["Weight"] = pd.to_numeric(df["Weight"], errors="coerce")
 
-    # ✅ SOLO ENTREGADOS
-    df_entregados = df[df["FinalStatus"] == "delivered"]
+    # Solo entregados
+    df_entregados = df[df["FinalStatus"] == "delivered"].copy()
 
-    # 1️⃣ PAQUETES TOTALES
+    # -----------------------------
+    # PRIORIDAD PARA DEDUPLICAR
+    # -----------------------------
+    def prioridad(row):
+        if not row["customerAccountCode"].startswith("TEMU") and row["Weight"] < 1:
+            return 0
+        if not row["customerAccountCode"].startswith("TEMU"):
+            return 1
+        return 2
+
+    df_entregados["prioridad"] = df_entregados.apply(prioridad, axis=1)
+
+    # Deduplicar por PARADA (dirección)
+    df_paradas = (
+        df_entregados
+        .sort_values("prioridad")
+        .drop_duplicates(
+            subset=["DriverName", "Route", "RecipientName"],
+            keep="first"
+        )
+    )
+
+    # -----------------------------
+    # MÉTRICAS
+    # -----------------------------
+
+    # Paquetes totales
     pq_totales = (
         df_entregados
         .groupby(["DriverName", "Route"])["TrackingNo"]
@@ -81,15 +105,15 @@ async def procesar_excel(file: UploadFile = File(...)):
         .rename("PQ_Totales")
     )
 
-    # 2️⃣ PARADAS (destinatarios únicos)
+    # Paradas (direcciones únicas, SIEMPRE)
     paradas = (
-        df_entregados
+        df_paradas
         .groupby(["DriverName", "Route"])["RecipientName"]
-        .nunique()
+        .count()
         .rename("Paradas")
     )
 
-    # 3️⃣ ENTREGAS TEMU
+    # Entregas TEMU (por paquete)
     entregas_temu = (
         df_entregados[
             df_entregados["customerAccountCode"].str.startswith("TEMU")
@@ -99,35 +123,29 @@ async def procesar_excel(file: UploadFile = File(...)):
         .rename("Entregas_TEMU")
     )
 
-    # 4️⃣ 🔥 PARADAS < 1 LIBRA, NO TEMU
-    df_light_non_temu = df_entregados[
-        (~df_entregados["customerAccountCode"].str.startswith("TEMU")) &
-        (df_entregados["Weight"] < 1)
-    ]
-
-    paradas_light_non_temu = (
-        df_light_non_temu
+    # Paradas < 1 lb y NO TEMU (solo si el mejor paquete cumple)
+    paradas_light = (
+        df_paradas[
+            (~df_paradas["customerAccountCode"].str.startswith("TEMU")) &
+            (df_paradas["Weight"] < 1)
+        ]
         .groupby(["DriverName", "Route"])["RecipientName"]
-        .nunique()
+        .count()
         .rename("Paradas_<1lb_sin_TEMU")
     )
 
-    # 5️⃣ UNIR TODO
+    # -----------------------------
+    # UNIÓN FINAL
+    # -----------------------------
     resumen = (
         pd.concat(
-            [
-                pq_totales,
-                paradas,
-                entregas_temu,
-                paradas_light_non_temu,
-            ],
-            axis=1,
+            [pq_totales, paradas, entregas_temu, paradas_light],
+            axis=1
         )
         .fillna(0)
         .reset_index()
     )
 
-    # Tipos
     for col in [
         "PQ_Totales",
         "Paradas",
@@ -136,7 +154,7 @@ async def procesar_excel(file: UploadFile = File(...)):
     ]:
         resumen[col] = resumen[col].astype(int)
 
-    # 6️⃣ TOTAL GENERAL
+    # TOTAL GENERAL
     totales = pd.DataFrame({
         "DriverName": ["TOTAL GENERAL"],
         "Route": ["—"],
@@ -148,7 +166,7 @@ async def procesar_excel(file: UploadFile = File(...)):
 
     resumen_final = pd.concat([resumen, totales], ignore_index=True)
 
-    # 7️⃣ GENERAR EXCEL
+    # Excel
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         df.to_excel(writer, sheet_name="Original", index=False)
@@ -161,14 +179,13 @@ async def procesar_excel(file: UploadFile = File(...)):
     output.seek(0)
 
     filename = f"resumen_{file.filename.split('.')[0]}.xlsx"
-    headers = {
-        "Content-Disposition": f'attachment; filename="{filename}"'
-    }
 
     return StreamingResponse(
         output,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers=headers,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        },
     )
 
 
