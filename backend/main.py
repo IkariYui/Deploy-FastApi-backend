@@ -32,16 +32,18 @@ async def procesar_excel(file: UploadFile = File(...)):
     except Exception:
         df = pd.read_excel(io.BytesIO(contents))
 
-    # Normalizar columnas
+    # -----------------------------
+    # NORMALIZACIÓN
+    # -----------------------------
     df.columns = [c.strip() for c in df.columns]
 
     columnas = [
         "DriverName",
         "Route",
-        "RecipientName",   # Dirección
+        "RecipientName",
         "customerAccountCode",
         "TrackingNo",
-        "FinalStatus",
+        "Status",
         "Weight",
     ]
 
@@ -49,9 +51,8 @@ async def procesar_excel(file: UploadFile = File(...)):
         if col not in df.columns:
             df[col] = pd.NA
 
-    # Normalizaciones
-    df["FinalStatus"] = (
-        df["FinalStatus"]
+    df["Status"] = (
+        df["Status"]
         .fillna("")
         .astype(str)
         .str.lower()
@@ -68,14 +69,16 @@ async def procesar_excel(file: UploadFile = File(...)):
 
     df["Weight"] = pd.to_numeric(df["Weight"], errors="coerce")
 
-    # Solo entregados
-    df_entregados = df[df["FinalStatus"] == "delivered"].copy()
+    # -----------------------------
+    # SOLO ENTREGADOS
+    # -----------------------------
+    df_entregados = df[df["Status"] == "delivered"].copy()
 
     # -----------------------------
-    # PRIORIDAD PARA DEDUPLICAR
+    # PRIORIDAD PARA REPRESENTAR PARADAS
     # -----------------------------
     def prioridad(row):
-        if not row["customerAccountCode"].startswith("TEMU") and row["Weight"] < 1:
+        if not row["customerAccountCode"].startswith("TEMU") and row["Weight"] >= 1:
             return 0
         if not row["customerAccountCode"].startswith("TEMU"):
             return 1
@@ -83,7 +86,9 @@ async def procesar_excel(file: UploadFile = File(...)):
 
     df_entregados["prioridad"] = df_entregados.apply(prioridad, axis=1)
 
-    # Deduplicar por PARADA (dirección)
+    # -----------------------------
+    # PARADAS GENERALES (BASE)
+    # -----------------------------
     df_paradas = (
         df_entregados
         .sort_values("prioridad")
@@ -105,7 +110,7 @@ async def procesar_excel(file: UploadFile = File(...)):
         .rename("PQ_Totales")
     )
 
-    # Paradas (direcciones únicas, SIEMPRE)
+    # Paradas generales (SIEMPRE)
     paradas = (
         df_paradas
         .groupby(["DriverName", "Route"])["RecipientName"]
@@ -113,21 +118,21 @@ async def procesar_excel(file: UploadFile = File(...)):
         .rename("Paradas")
     )
 
-    # Entregas TEMU (por paquete)
-    entregas_temu = (
-        df_entregados[
-            df_entregados["customerAccountCode"].str.startswith("TEMU")
+    # Paradas TEMU (desde paradas generales)
+    paradas_temu = (
+        df_paradas[
+            df_paradas["customerAccountCode"].str.contains("TEMU", na=False)
         ]
-        .groupby(["DriverName", "Route"])["TrackingNo"]
+        .groupby(["DriverName", "Route"])["RecipientName"]
         .count()
-        .rename("Entregas_TEMU")
+        .rename("Paradas_TEMU")
     )
 
-    # Paradas < 1 lb y NO TEMU (solo si el mejor paquete cumple)
+    # Paradas < 1 lb SIN TEMU
     paradas_light = (
         df_paradas[
-            (~df_paradas["customerAccountCode"].str.startswith("TEMU")) &
-            (df_paradas["Weight"] < 1)
+            (df_paradas["Weight"] < 1) &
+            (~df_paradas["customerAccountCode"].str.contains("TEMU", na=False))
         ]
         .groupby(["DriverName", "Route"])["RecipientName"]
         .count()
@@ -139,7 +144,7 @@ async def procesar_excel(file: UploadFile = File(...)):
     # -----------------------------
     resumen = (
         pd.concat(
-            [pq_totales, paradas, entregas_temu, paradas_light],
+            [pq_totales, paradas, paradas_temu, paradas_light],
             axis=1
         )
         .fillna(0)
@@ -149,24 +154,28 @@ async def procesar_excel(file: UploadFile = File(...)):
     for col in [
         "PQ_Totales",
         "Paradas",
-        "Entregas_TEMU",
+        "Paradas_TEMU",
         "Paradas_<1lb_sin_TEMU",
     ]:
         resumen[col] = resumen[col].astype(int)
 
+    # -----------------------------
     # TOTAL GENERAL
+    # -----------------------------
     totales = pd.DataFrame({
         "DriverName": ["TOTAL GENERAL"],
         "Route": ["—"],
         "PQ_Totales": [resumen["PQ_Totales"].sum()],
         "Paradas": [resumen["Paradas"].sum()],
-        "Entregas_TEMU": [resumen["Entregas_TEMU"].sum()],
+        "Paradas_TEMU": [resumen["Paradas_TEMU"].sum()],
         "Paradas_<1lb_sin_TEMU": [resumen["Paradas_<1lb_sin_TEMU"].sum()],
     })
 
     resumen_final = pd.concat([resumen, totales], ignore_index=True)
 
-    # Excel
+    # -----------------------------
+    # EXCEL DE SALIDA
+    # -----------------------------
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         df.to_excel(writer, sheet_name="Original", index=False)
