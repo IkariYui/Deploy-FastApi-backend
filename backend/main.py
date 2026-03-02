@@ -121,7 +121,7 @@ async def procesar_excel(file: UploadFile = File(...)):
     # Paradas TEMU (desde paradas generales)
     paradas_temu = (
         df_paradas[
-            df_paradas["customerAccountCode"].str.contains("TEMU", na=False)
+            df_paradas["customerAccountCode"].str.startswith("TEMU", na=False)
         ]
         .groupby(["DriverName", "Route"])["RecipientName"]
         .count()
